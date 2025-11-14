@@ -1,0 +1,95 @@
+#!/bin/bash
+
+# Create a log file for debugging
+exec > /tmp/mcp_install.log 2>&1
+echo "Starting postinstall script at $(date)"
+
+# Get the console user - this is more reliable for packages
+consoleUser=$(/usr/bin/stat -f "%Su" /dev/console)
+echo "Console user detected: $consoleUser"
+
+# Define the path to the Claude config file
+CLAUDE_CONFIG_FILE="/Users/$consoleUser/Library/Application Support/Claude/claude_desktop_config.json"
+echo "Config file: $CLAUDE_CONFIG_FILE"
+
+# Package name set during build
+PACKAGE_NAME="PLACEHOLDER"
+echo "Package name: $PACKAGE_NAME"
+
+# Path to the installed MCP server
+SERVER_PATH="/Applications/$PACKAGE_NAME/server"
+echo "Server path: $SERVER_PATH"
+
+# Check if the config file exists
+if [ -f "$CLAUDE_CONFIG_FILE" ]; then
+    echo "Existing config file found"
+    
+    # Check if the file has valid JSON content
+    if [ -s "$CLAUDE_CONFIG_FILE" ] && jq empty "$CLAUDE_CONFIG_FILE" 2>/dev/null; then
+        echo "File contains valid JSON, updating it..."
+        
+        # Create a temporary file
+        TMP_CONFIG=$(mktemp)
+        
+        # Check if mcpServers field exists
+        HAS_MCP_SERVERS=$(jq 'has("mcpServers")' "$CLAUDE_CONFIG_FILE")
+        
+        if [ "$HAS_MCP_SERVERS" = "true" ]; then
+            echo "mcpServers field exists, adding $PACKAGE_NAME entry..."
+            # Add the package entry to the existing mcpServers field with args
+            jq --arg path "$SERVER_PATH" --arg name "$PACKAGE_NAME" \
+               '.mcpServers[$name] = {"command": $path, "args": ["--with-langfuse"]}' \
+               "$CLAUDE_CONFIG_FILE" > "$TMP_CONFIG"
+        else
+            echo "mcpServers field doesn't exist, creating it with $PACKAGE_NAME entry..."
+            # Add mcpServers field with package entry and args
+            jq --arg path "$SERVER_PATH" --arg name "$PACKAGE_NAME" \
+               '. + {"mcpServers": {($name): {"command": $path, "args": ["--with-langfuse"]}}}' \
+               "$CLAUDE_CONFIG_FILE" > "$TMP_CONFIG"
+        fi
+        
+        # Replace the original file with the updated one
+        mv "$TMP_CONFIG" "$CLAUDE_CONFIG_FILE"
+    else
+        echo "File exists but doesn't contain valid JSON, creating new config..."
+        # Create the config file with the package entry
+        cat > "$CLAUDE_CONFIG_FILE" << EOF
+{
+  "mcpServers": {
+    "$PACKAGE_NAME": {
+      "command": "$SERVER_PATH",
+      "args": ["--with-langfuse"]
+    }
+  }
+}
+EOF
+    fi
+else
+    echo "Config file not found, creating it..."
+    # Ensure directory exists
+    mkdir -p "$(dirname "$CLAUDE_CONFIG_FILE")"
+    
+    # Create the config file with the package entry
+    cat > "$CLAUDE_CONFIG_FILE" << EOF
+{
+  "mcpServers": {
+    "$PACKAGE_NAME": {
+      "command": "$SERVER_PATH",
+      "args": ["--with-langfuse"]
+    }
+  }
+}
+EOF
+fi
+
+# Fix ownership
+echo "Setting permissions..."
+chown "$consoleUser:staff" "$CLAUDE_CONFIG_FILE"
+chmod 644 "$CLAUDE_CONFIG_FILE"
+
+# Verify file
+echo "Config file contents:"
+cat "$CLAUDE_CONFIG_FILE"
+
+echo "Postinstall script completed successfully at $(date)"
+exit 0
